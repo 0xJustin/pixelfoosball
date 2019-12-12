@@ -26,4 +26,4 @@ Dash - Space (A in controller)
 
 Move - Up/Down Arrows (up/down in controller)
 
-Dash - Left Shift (A in controller)
+Dash - Left Shift (A in controller)# hapticfoosball

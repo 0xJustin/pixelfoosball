@@ -3,11 +3,20 @@ using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.SceneManagement;
 using UnityEngine.UI;
+using System.Threading;
+using System.IO.Ports;
+using System;
 
 public class GameManager : MonoBehaviour {
 
     public static GameManager gm;
-
+    private Thread thread;
+    Queue outputQueue;	// From Unity to Arduino
+    Queue inputQueue;	// From Arduino to Unity
+    public string inp;
+    public string outp;
+    SerialPort stream;
+    public bool looping = true;
     [Header("Scene Atributtes")]
     public GameObject ball;
     public Rigidbody2D ballRB;
@@ -15,10 +24,13 @@ public class GameManager : MonoBehaviour {
     public Text countdown;
     public Text timeText;
     public AudioSource audio;
-    public AudioClip powerClip;
     public AudioClip countdownClip;
     public AudioClip countdownFinalClip;
-
+    public int guys_nums = 0;
+	public string rdcommand;
+    public int ncommand;
+    public bool hit;
+    public int dir;
     //theres a glitch with the particles when the ball translates
     //this is here to disable the particles when there is a goal to stop the glitch
     private ParticleSystem.EmissionModule ballParticleEmission;
@@ -31,15 +43,78 @@ public class GameManager : MonoBehaviour {
     private float beginTime;
     private float currentTime;
     public bool ai;
-    public float cooldownTime;
-    public Dictionary<string, float> nextPower;
-    public KeyCode powerP1;
-    public KeyCode powerP2;
     public Color p1Color;
     public Color p2Color;
     public bool paused;
     public int difficulty;
+	public void StartThread ()
+    {
+        outputQueue = Queue.Synchronized( new Queue() );
+        inputQueue  = Queue.Synchronized( new Queue() );
 
+        thread = new Thread (ThreadLoop);
+        thread.Start();
+    }
+
+    public void SendToArduino (string command)
+    {
+        outputQueue.Enqueue(command);
+    }
+    public void WriteToArduino(string message) {
+        stream.Write(message);
+        stream.BaseStream.Flush();
+    }
+    public string RdFromArduino ()
+    {
+        Debug.Log(inputQueue.Count);
+        if (inputQueue.Count == 0)
+            return null;
+        return (string) inputQueue.Dequeue();
+    }
+
+	public string ReadFromArduino (int timeout) {
+		stream.ReadTimeout = timeout;        
+		try {
+			return stream.ReadLine();
+		}
+		catch (TimeoutException) {
+			return null;
+		}
+	}
+    public void ThreadLoop ()
+    {
+        // Opens the connection on the serial port
+        stream = new SerialPort("/dev/cu.usbserial-AL03G22F", 9600);
+        stream.ReadTimeout = 10;
+        stream.Open();
+        // Looping
+        while (looping)
+        {
+            // Send to Arduino
+            if (outputQueue.Count != 0)
+            {
+                string command = (string) outputQueue.Dequeue();
+                WriteToArduino(command);
+            }
+
+            // Read from Arduino
+            string result = ReadFromArduino(10);
+			if (result != null) {
+                inp = result;
+				inputQueue.Enqueue (result);
+            }
+        }
+
+        stream.Close();
+
+    }
+    public void StopThread ()
+    {
+        lock (this)
+        {
+            looping = false;
+        }
+    }
     private void Awake() {
         gm = this;
         p1Color = MenuManager.mm.p1Color;
@@ -53,7 +128,6 @@ public class GameManager : MonoBehaviour {
         beginTime = Mathf.Infinity;
         ballParticleEmission = ball.GetComponent<ParticleSystem>().emission;
         ballRB = ball.GetComponent<Rigidbody2D>();
-        nextPower = new Dictionary<string, float>();
         audio = GetComponent<AudioSource>();
         Time.timeScale = 1.0f;
         Time.fixedDeltaTime = 0.02f;
@@ -62,17 +136,7 @@ public class GameManager : MonoBehaviour {
 
     public void Update() {
         //inputs
-        if ((Input.GetKeyDown(powerP1) || Input.GetAxis("Dashp1") == 1) && Time.time > nextPower["p1"] && !paused) {
-            nextPower["p1"] = Time.time + cooldownTime;
-            audio.clip = powerClip;
-            audio.Play();
-        }
-        else if (!ai && (Input.GetKeyDown(powerP2) || Input.GetAxis("Dashp2") == 1) && Time.time > nextPower["p2"] && !paused) {
-            nextPower["p2"] = Time.time + cooldownTime;
-            audio.clip = powerClip;
-            audio.Play();
-        }
-        else if (Input.GetKeyDown(KeyCode.Escape) || Input.GetAxis("Quitp1") == 1)
+        if (Input.GetKeyDown(KeyCode.Escape) || Input.GetAxis("Quitp1") == 1)
             SceneManager.LoadScene("menuScene");
         else if (Input.GetKeyDown(KeyCode.P) || Input.GetButtonDown("Pausep1"))
             pauseUnpauseGame();
@@ -85,6 +149,32 @@ public class GameManager : MonoBehaviour {
         if (ai)
             AIManager.processAI();
 
+		rdcommand = inp;
+        if (rdcommand == null) {
+            hit = false;
+            ncommand = -10101;
+            //dir = 0;
+            return;
+        }
+        if (rdcommand.Contains(" ")) {
+            hit = true;
+            rdcommand = rdcommand.Substring(1);
+        } else {
+            hit = false;
+        }
+        if (rdcommand.Contains("W")){
+            dir = 1;
+            rdcommand = rdcommand.Substring(1);
+        }
+        else if (rdcommand.Contains("S")){
+            dir = -1;
+            rdcommand = rdcommand.Substring(1);
+        } else {
+            dir = 0;
+        }
+        Debug.Log(ncommand);
+        ncommand = int.Parse(rdcommand);
+
         //check if game is over
         checkGameOver();
     }
@@ -95,12 +185,11 @@ public class GameManager : MonoBehaviour {
     }
 
     public void StartGame() {
+        StartThread();
         score.enabled = false;
         ball.transform.position = new Vector2(0, -0.24f);
         p1Score = 0;
         p2Score = 0;
-        nextPower["p1"] = 0;
-        nextPower["p2"] = 0;
         StartCoroutine(Countdown());
     }
 
@@ -144,7 +233,7 @@ public class GameManager : MonoBehaviour {
     }
 
     public void GoBall() {
-        float x = Random.Range(0f, 1f);
+        float x = UnityEngine.Random.Range(0f, 1f);
         if (x <= 0.5f)
             ballRB.AddForce(new Vector2(13f, 6f));
         else ballRB.AddForce(new Vector2(-13f, -6f));
